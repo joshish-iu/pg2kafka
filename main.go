@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	logger "github.com/blendle/go-logger"
+	logger "github.com/joshish-iu/go-logger"
 	"github.com/blendle/pg2kafka/eventqueue"
 	"github.com/confluentinc/confluent-kafka-go/kafka"
 	"github.com/lib/pq"
