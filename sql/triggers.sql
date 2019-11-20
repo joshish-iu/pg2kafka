@@ -3,7 +3,9 @@ LANGUAGE plpgsql
 AS $_$
 DECLARE
   external_id varchar;
-  changes jsonb;
+  real_changes jsonb;
+  before_json jsonb;
+  after_json jsonb;
   col record;
   outbound_event record;
 BEGIN
@@ -18,21 +20,25 @@ BEGIN
   END IF;
 
   IF TG_OP = 'INSERT' THEN
-    changes := row_to_json(NEW);
+    before_json := row_to_json(OLD);
+    after_json := row_to_json(NEW);
   ELSIF TG_OP = 'UPDATE' THEN
-    changes := row_to_json(NEW);
+    real_changes := row_to_json(NEW);
     -- Remove object that didn't change
     FOR col IN SELECT * FROM jsonb_each(row_to_json(OLD)::jsonb) LOOP
-      IF changes->col.key = col.value THEN
-        changes = changes - col.key;
+      IF real_changes->col.key = col.value THEN
+        real_changes = real_changes - col.key;
       END IF;
     END LOOP;
+    before_json := row_to_json(OLD);
+    after_json := row_to_json(NEW);
   ELSIF TG_OP = 'DELETE' THEN
-    changes := '{}'::jsonb;
+    before_json := row_to_json(OLD);
+    after_json := '{}'::jsonb;
   END IF;
 
   -- Don't enqueue an event for updates that did not change anything
-  IF TG_OP = 'UPDATE' AND changes = '{}'::jsonb THEN
+  IF TG_OP = 'UPDATE' AND real_changes = '{}'::jsonb THEN
     RETURN NULL;
   END IF;
 
@@ -52,7 +58,8 @@ AS $_$
 DECLARE
   query text;
   rec record;
-  changes jsonb;
+  before_json jsonb;
+  after_json jsonb;
   external_id_ref varchar;
   external_id varchar;
 BEGIN
@@ -63,11 +70,12 @@ BEGIN
   query := 'SELECT * FROM ' || table_name_ref;
 
   FOR rec IN EXECUTE query LOOP
-    changes := row_to_json(rec);
+    before_json := '{}'::jsonb;
+    after_json := row_to_json(rec);
     external_id := changes->>external_id_ref;
 
-    INSERT INTO pg2kafka.outbound_event_queue(external_id, table_name, statement, data)
-    VALUES (external_id, table_name_ref, 'SNAPSHOT', changes);
+    INSERT INTO pg2kafka.outbound_event_queue(external_id, table_name, statement, before_json, after_json)
+    VALUES (external_id, table_name_ref, 'SNAPSHOT', before_json, after_json);
   END LOOP;
 
   PERFORM pg_notify('outbound_event_queue', 'SNAPSHOT');
@@ -102,7 +110,7 @@ BEGIN
     || ' AFTER INSERT OR DElETE OR UPDATE ON ' || table_name_ref
     || ' FOR EACH ROW EXECUTE PROCEDURE pg2kafka.enqueue_event()';
 
-  -- We aqcuire an exlusive lock on the table to ensure that we do not miss any
+  -- We acquire an exlusive lock on the table to ensure that we do not miss any
   -- events between snapshotting and once the trigger is added.
   EXECUTE lock_query;
 
